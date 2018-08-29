@@ -160,6 +160,8 @@ type client struct {
 	trace bool
 	echo  bool
 
+	nonce string
+
 	flags clientFlag // Compact booleans into a single field. Size will be increased when needed.
 }
 
@@ -249,6 +251,9 @@ type clientOpts struct {
 	Authorization string `json:"auth_token"`
 	Username      string `json:"user"`
 	Password      string `json:"pass"`
+	Sig           string `json:"sig"`
+	ACL           string `json:"acl"`
+	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Lang          string `json:"lang"`
 	Version       string `json:"version"`
@@ -321,6 +326,19 @@ func (c *client) RegisterUser(user *User) {
 	defer c.mu.Unlock()
 
 	c.setPermissions(user.Permissions)
+}
+
+// Lock should be held on entry
+// Create a nonce for the client to use for a single round trip
+func (c *client) generateNonce() {
+	//FIXME(sasbury) This is not a valid nonce
+	c.nonce = genID()
+}
+
+func (c *client) clearNonce() {
+	c.mu.Lock()
+	c.nonce = ""
+	c.mu.Unlock()
 }
 
 // Initializes client.perms structure.
@@ -916,6 +934,7 @@ func (c *client) sendPing() {
 // Assume lock is held.
 func (c *client) generateClientInfoJSON(info Info) []byte {
 	info.CID = c.cid
+	info.Nonce = c.nonce
 	// Generate the info json
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}

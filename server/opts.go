@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/jwt"
+
 	"github.com/nats-io/gnatsd/conf"
 	"github.com/nats-io/gnatsd/util"
 )
@@ -64,6 +66,10 @@ type Options struct {
 	Username         string        `json:"-"`
 	Password         string        `json:"-"`
 	Authorization    string        `json:"-"`
+	ClientKey        string        `json:"-"`
+	ClientKeys       []string      `json:"-"`
+	Account          string        `json:"-"`
+	Accounts         []*jwt.Claims `json:"-"`
 	PingInterval     time.Duration `json:"ping_interval"`
 	MaxPingsOut      int           `json:"ping_max"`
 	HTTPHost         string        `json:"http_host"`
@@ -131,11 +137,16 @@ func (o *Options) Clone() *Options {
 // Configuration file authorization section.
 type authorization struct {
 	// Singles
-	user  string
-	pass  string
-	token string
+	user      string
+	pass      string
+	token     string
+	clientKey string
 	// Multiple Users
-	users              []*User
+	users []*User
+	// Multiple clients
+	clientKeys []string
+	// Multiple accounts
+	accounts           []*jwt.Claims
 	timeout            float64
 	defaultPermissions *Permissions
 }
@@ -248,13 +259,28 @@ func (o *Options) ProcessConfigFile(configFile string) error {
 			o.AuthTimeout = auth.timeout
 			// Check for multiple users defined
 			if auth.users != nil {
-				if auth.user != "" {
-					return fmt.Errorf("Can not have a single user/pass and a users array")
-				}
-				if auth.token != "" {
-					return fmt.Errorf("Can not have a token and a users array")
+				if auth.user != "" || auth.token != "" || auth.clientKey != "" {
+					return fmt.Errorf("Can not use single auth settings (user, token, clientkey) when using the users array")
+				} else if auth.accounts != nil || auth.clientKeys != nil {
+					return fmt.Errorf("only the users or accounts or client keys can be used to configure authentication, mixed modes are not supported")
 				}
 				o.Users = auth.users
+			}
+			// Check for multiple accounts are defined
+			if auth.accounts != nil {
+				if auth.user != "" || auth.token != "" || auth.clientKey != "" {
+					return fmt.Errorf("Can not use single auth settings (user, token, clientkey) when using account mode")
+				} else if auth.clientKeys != nil {
+					return fmt.Errorf("only the users or accounts or client keys can be used to configure authentication, mixed modes are not supported")
+				}
+				o.Accounts = auth.accounts
+			}
+			// Check for multiple accounts are defined
+			if auth.clientKeys != nil {
+				if auth.user != "" || auth.token != "" || auth.clientKey != "" {
+					return fmt.Errorf("Can not use single auth settings (user, token, clientkey) when using client key mode")
+				}
+				o.ClientKeys = auth.clientKeys
 			}
 		case "http":
 			hp, err := parseListen(v)
@@ -462,6 +488,18 @@ func parseAuthorization(am map[string]interface{}) (*authorization, error) {
 				return nil, err
 			}
 			auth.users = users
+		case "accounts":
+			accounts, err := parseAccounts(mv)
+			if err != nil {
+				return nil, err
+			}
+			auth.accounts = accounts
+		case "clientkeys":
+			clientKeys, err := parseClientKeys(mv)
+			if err != nil {
+				return nil, err
+			}
+			auth.clientKeys = clientKeys
 		case "default_permission", "default_permissions", "permissions":
 			pm, ok := mv.(map[string]interface{})
 			if !ok {
@@ -522,7 +560,7 @@ func parseUsers(mv interface{}) ([]*User, error) {
 		}
 		// Check to make sure we have at least username and password
 		if user.Username == "" || user.Password == "" {
-			return nil, fmt.Errorf("User entry requires a user and a password")
+			return nil, fmt.Errorf("User entry requires a user and a password or a public key")
 		}
 		users = append(users, user)
 	}
@@ -554,6 +592,48 @@ func parseUserPermissions(pm map[string]interface{}) (*Permissions, error) {
 		}
 	}
 	return p, nil
+}
+
+// Helper function to parse multiple accounts.
+func parseAccounts(mv interface{}) ([]*jwt.Claims, error) {
+	// Make sure we have an array
+	uv, ok := mv.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Expected accounts field to be an array, got %v", mv)
+	}
+	accounts := []*jwt.Claims{}
+	for _, u := range uv {
+		um, ok := u.(string)
+		if !ok {
+			return nil, fmt.Errorf("Expected account entry to be a string, got %v", u)
+		}
+		encoded := string(um)
+		account, err := jwt.Decode(encoded)
+		if err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, account)
+	}
+	return accounts, nil
+}
+
+// Helper function to parse multiple client keys.
+func parseClientKeys(mv interface{}) ([]string, error) {
+	// Make sure we have an array
+	uv, ok := mv.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Expected client keys field to be an array, got %v", mv)
+	}
+	clientKeys := []string{}
+	for _, u := range uv {
+		um, ok := u.(string)
+		if !ok {
+			return nil, fmt.Errorf("Expected client key entry to be a string, got %v", u)
+		}
+		client := string(um)
+		clientKeys = append(clientKeys, client)
+	}
+	return clientKeys, nil
 }
 
 // Tope level parser for authorization configurations.
@@ -828,6 +908,9 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 	if flagOpts.Authorization != "" {
 		opts.Authorization = flagOpts.Authorization
 	}
+	if flagOpts.ClientKey != "" {
+		opts.ClientKey = flagOpts.ClientKey
+	}
 	if flagOpts.HTTPPort != 0 {
 		opts.HTTPPort = flagOpts.HTTPPort
 	}
@@ -1069,6 +1152,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Username, "user", "", "Username required for connection.")
 	fs.StringVar(&opts.Password, "pass", "", "Password required for connection.")
 	fs.StringVar(&opts.Authorization, "auth", "", "Authorization token required for connection.")
+	fs.StringVar(&opts.Account, "account", "", "Account JWT for the issuer of user connection ACLs.")
+	fs.StringVar(&opts.ClientKey, "clientkey", "", "Public key required for connection.")
 	fs.IntVar(&opts.HTTPPort, "m", 0, "HTTP Port for /varz, /connz endpoints.")
 	fs.IntVar(&opts.HTTPPort, "http_port", 0, "HTTP Port for /varz, /connz endpoints.")
 	fs.IntVar(&opts.HTTPSPort, "ms", 0, "HTTPS Port for /varz, /connz endpoints.")
@@ -1163,6 +1248,14 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		// have been caught the first time this function was called (after setting up the
 		// flags).
 		fs.Parse(args)
+	}
+
+	// If a single account is set, make sure it is a valid JWT
+	if opts.Account != "" {
+		_, err := jwt.Decode(opts.Account)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Special handling of some flags

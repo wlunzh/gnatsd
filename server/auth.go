@@ -15,9 +15,13 @@ package server
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
+	"github.com/nats-io/nkeys"
+
+	"github.com/nats-io/jwt"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -133,6 +137,28 @@ func (s *Server) configureAuthorization() {
 		s.info.AuthRequired = true
 	} else if opts.Username != "" || opts.Authorization != "" {
 		s.info.AuthRequired = true
+	} else if opts.ClientKey != "" {
+		s.clientKeys = make(map[string]string)
+		s.clientKeys[opts.ClientKey] = opts.ClientKey
+		s.info.AuthRequired = true
+	} else if opts.ClientKeys != nil && len(opts.ClientKeys) > 0 {
+		s.clientKeys = make(map[string]string)
+		for _, u := range opts.ClientKeys {
+			s.clientKeys[u] = u
+		}
+		s.info.AuthRequired = true
+	} else if opts.Account != "" {
+		// We checked the account JWTs validity already
+		account, _ := jwt.Decode(opts.Account)
+		s.accounts = make(map[string]*jwt.Claims)
+		s.accounts[account.Issuer] = account
+		s.info.AuthRequired = true
+	} else if opts.Accounts != nil && len(opts.Accounts) > 0 {
+		s.accounts = make(map[string]*jwt.Claims)
+		for _, u := range opts.Accounts {
+			s.accounts[u.Issuer] = u
+		}
+		s.info.AuthRequired = true
 	} else {
 		s.users = nil
 		s.info.AuthRequired = false
@@ -152,12 +178,28 @@ func (s *Server) checkAuthorization(c *client) bool {
 	}
 }
 
-// hasUsers leyt's us know if we have a users array.
+// hasUsers let's us know if we have a users array.
 func (s *Server) hasUsers() bool {
 	s.mu.Lock()
 	hu := s.users != nil
 	s.mu.Unlock()
 	return hu
+}
+
+// hasAccounts let's us know if we have an accounts array.
+func (s *Server) hasAccounts() bool {
+	s.mu.Lock()
+	ha := s.accounts != nil
+	s.mu.Unlock()
+	return ha
+}
+
+// hasClientKeys let's us know if we have a client key array.
+func (s *Server) hasClientKeys() bool {
+	s.mu.Lock()
+	ha := s.clientKeys != nil
+	s.mu.Unlock()
+	return ha
 }
 
 // isClientAuthorized will check the client against the proper authorization method and data.
@@ -166,7 +208,7 @@ func (s *Server) isClientAuthorized(c *client) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	// Check custom auth first, then multiple users, then token, then single user/pass.
+	// Check custom auth first, then multiple users, then token, then single user/pass, then accounts, then client keys.
 	if opts.CustomClientAuthentication != nil {
 		return opts.CustomClientAuthentication.Check(c)
 	} else if s.hasUsers() {
@@ -193,6 +235,10 @@ func (s *Server) isClientAuthorized(c *client) bool {
 			return false
 		}
 		return comparePasswords(opts.Password, c.opts.Password)
+	} else if s.hasAccounts() {
+		return s.checkAccount(c)
+	} else if s.hasClientKeys() {
+		return s.checkClientKey(c)
 	}
 
 	return true
@@ -248,6 +294,96 @@ func (s *Server) removeUnauthorizedSubs(c *client) {
 				string(sub.subject), c.opts.Username)
 		}
 	}
+}
+
+// Checks that the client has signed on with the account
+func (s *Server) checkAccount(c *client) bool {
+	nonce := c.nonce
+	acl := c.opts.ACL
+	clientID := c.opts.ID
+	sig := c.opts.Sig
+
+	// Check that we have a nonce for this client, then clear it
+	if nonce == "" {
+		return false
+	}
+	c.clearNonce()
+
+	// Check that we have a valid JWT
+	clientJWT, err := jwt.Decode(acl)
+	if err != nil {
+		return false
+	}
+
+	// Make sure we know the account
+	issuer := clientJWT.Issuer
+	knownAccount := false
+
+	if s.hasAccounts() {
+		s.mu.Lock()
+		_, knownAccount = s.accounts[issuer]
+		s.mu.Unlock()
+	}
+
+	if !knownAccount {
+		return false
+	}
+
+	// Grab the user allowed to use the JWT and make sure they signed the nonce
+	publicID := clientJWT.Nats["id"].(string)
+
+	if clientID != "" && clientID != publicID {
+		return false
+	}
+
+	clientNKey, err := nkeys.FromPublicKey(publicID)
+	if err != nil {
+		return false
+	}
+
+	decodedSig, err := base64.RawStdEncoding.DecodeString(sig)
+	if err != nil {
+		return false
+	}
+
+	return (clientNKey.Verify([]byte(nonce), decodedSig) == nil)
+}
+
+// Checks that the client has signed on with a valid client key
+func (s *Server) checkClientKey(c *client) bool {
+	nonce := c.nonce
+	clientID := c.opts.ID
+	sig := c.opts.Sig
+
+	// Check that we have a nonce for this client, then clear it
+	if nonce == "" {
+		return false
+	}
+	c.clearNonce()
+
+	knownClient := false
+	publicID := ""
+	if s.hasClientKeys() {
+		s.mu.Lock()
+		publicID, knownClient = s.clientKeys[clientID]
+		s.mu.Unlock()
+	}
+
+	if !knownClient {
+		return false
+	}
+
+	clientNKey, err := nkeys.FromPublicKey(publicID)
+	if err != nil {
+		return false
+	}
+
+	decodedSig, err := base64.RawStdEncoding.DecodeString(sig)
+	if err != nil {
+		return false
+	}
+
+	return (clientNKey.Verify([]byte(nonce), decodedSig) == nil)
 }
 
 // Support for bcrypt stored passwords and tokens.

@@ -557,6 +557,22 @@ func TestMultipleUsersConfig(t *testing.T) {
 	processOptions(opts)
 }
 
+func TestMultipleKeyConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/multiple_key.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+}
+
+func TestMultipleAccountsConfig(t *testing.T) {
+	opts, err := ProcessConfigFile("./configs/multiple_acct.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v\n", err)
+	}
+	processOptions(opts)
+}
+
 // Test highly depends on contents of the config file listed below. Any changes to that file
 // may very well break this test.
 func TestAuthorizationConfig(t *testing.T) {
@@ -761,46 +777,93 @@ func TestNewStyleAuthorizationConfig(t *testing.T) {
 	}
 }
 
-func TestTokenWithUserPass(t *testing.T) {
+func TestBadAuthModesInConfig(t *testing.T) {
 	confFileName := "test.conf"
 	defer os.Remove(confFileName)
-	content := `
-	authorization={
-		user: user
-		pass: password
-		token: $2a$11$whatever
-	}`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
-	}
-	_, err := ProcessConfigFile(confFileName)
-	if err == nil {
-		t.Fatal("Expected error, got none")
-	}
-	if !strings.Contains(err.Error(), "token") {
-		t.Fatalf("Expected error related to token, got %v", err)
-	}
-}
 
-func TestTokenWithUsers(t *testing.T) {
-	confFileName := "test.conf"
-	defer os.Remove(confFileName)
-	content := `
-	authorization={
-		token: $2a$11$whatever
-		users: [
-			{user: test, password: test}
-		]
-	}`
-	if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
+	configs := []string{
+		`authorization={
+			user: user
+			pass: password
+			token: $2a$11$whatever
+		}`, `authorization={
+			token: $2a$11$whatever
+			users: [
+				{user: test, password: test}
+			]
+		}`, `authorization={
+			user: user
+			pass: password
+			clientkeys = [
+			"UDCU63WFUZBVDKWVMZ4PQSPJY44TP6L7T5Y4PHPVUPFPQF7JFHT5G5BM"
+			]
+		}`, `authorization={
+			user: user
+			pass: password
+			accounts = [
+			"eyJ0eXAiOiJKV1QiLCJhbGciOiJOS0VZIn0.eyJpc3MiOiJBQ0hCSE5BRzVDMldaQVJSQTZSTjZZMlo3N01FWEw0QklJN0dJWVYyWFhTVlBFUFRCVkQzQUtQQiIsImlhdCI6MTUzNTU2NjQwOH0.uP+oWMv2kzlq2Qe0TX+obDsOvZ+mSNzlkYuVVM3dGDiMEIkPNwpuzu4H8RpgpHqfY/lws/QnWlqvlFa+pbJ6AQ",
+			]
+		}`, `authorization={
+			user: user
+			pass: password
+			clientkeys = [
+			"UDCU63WFUZBVDKWVMZ4PQSPJY44TP6L7T5Y4PHPVUPFPQF7JFHT5G5BM"
+			]
+		}`, `authorization={
+			user: user
+			pass: password
+			accounts = [
+			"eyJ0eXAiOiJKV1QiLCJhbGciOiJOS0VZIn0.eyJpc3MiOiJBQ0hCSE5BRzVDMldaQVJSQTZSTjZZMlo3N01FWEw0QklJN0dJWVYyWFhTVlBFUFRCVkQzQUtQQiIsImlhdCI6MTUzNTU2NjQwOH0.uP+oWMv2kzlq2Qe0TX+obDsOvZ+mSNzlkYuVVM3dGDiMEIkPNwpuzu4H8RpgpHqfY/lws/QnWlqvlFa+pbJ6AQ",
+			]
+		}`, `authorization={
+			users: [
+				{user: test, password: test}
+			]
+			clientkeys = [
+			"UDCU63WFUZBVDKWVMZ4PQSPJY44TP6L7T5Y4PHPVUPFPQF7JFHT5G5BM"
+			]
+		}`, `authorization={
+			users: [
+				{user: test, password: test}
+			]
+			accounts = [
+			"eyJ0eXAiOiJKV1QiLCJhbGciOiJOS0VZIn0.eyJpc3MiOiJBQ0hCSE5BRzVDMldaQVJSQTZSTjZZMlo3N01FWEw0QklJN0dJWVYyWFhTVlBFUFRCVkQzQUtQQiIsImlhdCI6MTUzNTU2NjQwOH0.uP+oWMv2kzlq2Qe0TX+obDsOvZ+mSNzlkYuVVM3dGDiMEIkPNwpuzu4H8RpgpHqfY/lws/QnWlqvlFa+pbJ6AQ",
+			]
+		}`, `authorization={
+			clientkeys = [
+			"UDCU63WFUZBVDKWVMZ4PQSPJY44TP6L7T5Y4PHPVUPFPQF7JFHT5G5BM"
+			]
+			accounts = [
+			"eyJ0eXAiOiJKV1QiLCJhbGciOiJOS0VZIn0.eyJpc3MiOiJBQ0hCSE5BRzVDMldaQVJSQTZSTjZZMlo3N01FWEw0QklJN0dJWVYyWFhTVlBFUFRCVkQzQUtQQiIsImlhdCI6MTUzNTU2NjQwOH0.uP+oWMv2kzlq2Qe0TX+obDsOvZ+mSNzlkYuVVM3dGDiMEIkPNwpuzu4H8RpgpHqfY/lws/QnWlqvlFa+pbJ6AQ",
+			]
+		}`,
 	}
-	_, err := ProcessConfigFile(confFileName)
-	if err == nil {
-		t.Fatal("Expected error, got none")
+	expectedErrors := []string{
+		"token",
+		"token",
+		"user",
+		"user",
+		"token",
+		"token",
+		"client keys",
+		"client keys",
+		"client keys",
 	}
-	if !strings.Contains(err.Error(), "token") {
-		t.Fatalf("Expected error related to token, got %v", err)
+
+	for i, config := range configs {
+		content := config
+		if err := ioutil.WriteFile(confFileName, []byte(content), 0666); err != nil {
+			t.Fatalf("Error writing config file: %v", err)
+		}
+		_, err := ProcessConfigFile(confFileName)
+		if err == nil {
+			t.Fatal("Expected error, got none")
+		}
+
+		expectedErr := expectedErrors[i]
+		if !strings.Contains(err.Error(), expectedErr) {
+			t.Fatalf("Expected error related to %s, got %v", expectedErr, err)
+		}
 	}
 }
 
@@ -1039,6 +1102,34 @@ func TestConfigureOptions(t *testing.T) {
 	opts := mustNotFail([]string{"-p", "1234"})
 	if opts.Port != 1234 {
 		t.Fatalf("Expected port to be 1234, got %v", opts.Port)
+	}
+
+	// Basic test with user/pass
+	opts = mustNotFail([]string{"-user", "connect", "-pass", "everything"})
+	if opts.Username != "connect" {
+		t.Fatalf("Expected user to be %q, got %v", "connect", opts.Username)
+	}
+	if opts.Password != "everything" {
+		t.Fatalf("Expected password to be %q, got %v", "everything", opts.Password)
+	}
+
+	// Basic test with token
+	opts = mustNotFail([]string{"-auth", "xkcd"})
+	if opts.Authorization != "xkcd" {
+		t.Fatalf("Expected token to be %q, got %v", "xkcd", opts.Authorization)
+	}
+
+	// Basic test with client key
+	opts = mustNotFail([]string{"-clientkey", "UDCU63WFUZBVDKWVMZ4PQSPJY44TP6L7T5Y4PHPVUPFPQF7JFHT5G5BM"})
+	if opts.ClientKey != "UDCU63WFUZBVDKWVMZ4PQSPJY44TP6L7T5Y4PHPVUPFPQF7JFHT5G5BM" {
+		t.Fatalf("Expected clientkey to be %q, got %v", "connect", opts.ClientKey)
+	}
+
+	// Basic test with account
+	acct := "eyJ0eXAiOiJKV1QiLCJhbGciOiJOS0VZIn0.eyJpc3MiOiJBQ0hCSE5BRzVDMldaQVJSQTZSTjZZMlo3N01FWEw0QklJN0dJWVYyWFhTVlBFUFRCVkQzQUtQQiIsImlhdCI6MTUzNTU2NjQwOH0.uP+oWMv2kzlq2Qe0TX+obDsOvZ+mSNzlkYuVVM3dGDiMEIkPNwpuzu4H8RpgpHqfY/lws/QnWlqvlFa+pbJ6AQ"
+	opts = mustNotFail([]string{"-account", acct})
+	if opts.Account != acct {
+		t.Fatalf("Expected account to be %q, got %v", acct, opts.Account)
 	}
 
 	// Should fail because of unknown parameter

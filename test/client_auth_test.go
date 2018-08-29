@@ -19,6 +19,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/nats-io/jwt"
+	"github.com/nats-io/nkeys"
+
 	"github.com/nats-io/go-nats"
 )
 
@@ -89,4 +92,129 @@ func TestTokenInConfig(t *testing.T) {
 	if !nc.AuthRequired() {
 		t.Fatal("Expected auth to be required for the server")
 	}
+}
+
+type testAuthHandler struct {
+	key nkeys.KeyPair
+	acl string
+	id  string
+}
+
+func (t *testAuthHandler) Sign(nonce []byte) ([]byte, error) {
+	return t.key.Sign(nonce)
+}
+
+func (t *testAuthHandler) ACL() (string, error) {
+	return t.acl, nil
+}
+
+func (t *testAuthHandler) ID() (string, error) {
+	return t.id, nil
+}
+
+func TestMultipleKeyAuth(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/multi_key.conf")
+	defer srv.Shutdown()
+
+	if opts.ClientKeys == nil {
+		t.Fatal("Expected a key array that is not nil")
+	}
+	if len(opts.ClientKeys) != 2 {
+		t.Fatal("Expected a key array that had 2 keys")
+	}
+
+	// Test first user
+	url := fmt.Sprintf("nats://%s:%d/",
+		opts.Host, opts.Port)
+
+	seed := "SUAJP574IOPM7XANWNU4MQR4NXV6IMKHMH4YI4G2BHLHC2THRM4NHHGFJ5XMLJSDKGVNKZTY7BE6TRZZG74X7H3RY6O7LI6K7AL6SKPH2P3K4"
+	user, err := nkeys.FromSeed(seed)
+	pub, err := user.PublicKey()
+	handler := &testAuthHandler{
+		key: user,
+		id:  pub,
+	}
+
+	nc, err := nats.Connect(url, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Expected a successful connect, got %v\n", err)
+	}
+	defer nc.Close()
+
+	if !nc.AuthRequired() {
+		t.Fatal("Expected auth to be required for the server")
+	}
+
+	// Test second user
+	seed = "SUAGKUTMGBNQJRKEVFWUMQUJXVXVDOONOODJ6HOANUQHKZRA4ZONPE3BF4BIYPQ3YMT3KRM64UPMBW7ZIPCUTPJCXQAEYKLE55OA25RXJSNXY"
+	user, err = nkeys.FromSeed(seed)
+	pub, err = user.PublicKey()
+	handler = &testAuthHandler{
+		key: user,
+		id:  pub,
+	}
+
+	nc, err = nats.Connect(url, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Expected a successful connect, got %v\n", err)
+	}
+	defer nc.Close()
+}
+
+func TestMultipleAccountAuth(t *testing.T) {
+	srv, opts := RunServerWithConfig("./configs/multi_acct.conf")
+	defer srv.Shutdown()
+
+	if opts.Accounts == nil {
+		t.Fatal("Expected a key array that is not nil")
+	}
+	if len(opts.Accounts) != 2 {
+		t.Fatal("Expected a key array that had 2 keys")
+	}
+
+	// Test first user
+	url := fmt.Sprintf("nats://%s:%d/",
+		opts.Host, opts.Port)
+
+	seed := "SAAGEPPTBJ6VEC4FPZ3HA472273BLJFEKPSRYGSR4NH64EJAQC3NB3EOCO2AN2FVNSBDCB5C35RVT76YJOXYCQR6MRRLVPPFK6I7GDKHWAXIG"
+	acct, err := nkeys.FromSeed(seed)
+	user, err := nkeys.CreateUser(nil)
+	claims := jwt.NewClaims()
+	claims.Nats["id"], _ = user.PublicKey()
+	acl, _ := claims.Encode(acct)
+
+	handler := &testAuthHandler{
+		key: user,
+		acl: acl,
+	}
+
+	nc, err := nats.Connect(url, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Expected a successful connect, got %v\n", err)
+	}
+	defer nc.Close()
+
+	if !nc.AuthRequired() {
+		t.Fatal("Expected auth to be required for the server")
+	}
+
+	// Test second user
+
+	seed = "SAAGEPPTBJ6VEC4FPZ3HA472273BLJFEKPSRYGSR4NH64EJAQC3NB3EOCO2AN2FVNSBDCB5C35RVT76YJOXYCQR6MRRLVPPFK6I7GDKHWAXIG"
+	acct, err = nkeys.FromSeed(seed)
+	user, err = nkeys.CreateUser(nil)
+	claims = jwt.NewClaims()
+	claims.Nats["id"], _ = user.PublicKey()
+	acl, _ = claims.Encode(acct)
+
+	handler = &testAuthHandler{
+		key: user,
+		acl: acl,
+	}
+
+	nc, err = nats.Connect(url, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Expected a successful connect, got %v\n", err)
+	}
+	defer nc.Close()
 }

@@ -35,6 +35,7 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/nats-io/gnatsd/util"
+	"github.com/nats-io/jwt"
 )
 
 // Info is the information sent to clients to help them understand information
@@ -54,6 +55,7 @@ type Info struct {
 	IP                string   `json:"ip,omitempty"`
 	CID               uint64   `json:"client_id,omitempty"`
 	ClientConnectURLs []string `json:"connect_urls,omitempty"` // Contains URLs a client can connect to.
+	Nonce             string   `json:"nonce,omitempty"`
 }
 
 // Server is our main struct.
@@ -73,6 +75,8 @@ type Server struct {
 	routes        map[uint64]*client
 	remotes       map[string]*client
 	users         map[string]*User
+	accounts      map[string]*jwt.Claims
+	clientKeys    map[string]string
 	totalClients  uint64
 	closed        *closedRingBuffer
 	done          chan bool
@@ -762,6 +766,11 @@ func (s *Server) createClient(conn net.Conn) *client {
 	c.Debugf("Client connection created")
 
 	// Send our information.
+
+	if info.AuthRequired && (s.hasAccounts() || s.hasClientKeys()) {
+		c.generateNonce()
+	}
+
 	c.sendInfo(c.generateClientInfoJSON(info))
 
 	// Unlock to register
