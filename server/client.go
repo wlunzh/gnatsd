@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/jwt"
 )
 
 // Type of client connection.
@@ -326,6 +328,50 @@ func (c *client) RegisterUser(user *User) {
 	defer c.mu.Unlock()
 
 	c.setPermissions(user.Permissions)
+}
+
+// RegisterClaims allows auth to call back into a new client
+// with the authenticated ACL (JWT). This is used to map any permissions
+// into the client.
+func (c *client) RegisterClaims(claims *jwt.Claims) error {
+	if claims == nil {
+		// Reset perms to nil in case client previously had them.
+		c.mu.Lock()
+		c.perms = nil
+		c.mu.Unlock()
+		return nil
+	}
+
+	perms := &Permissions{}
+	natsClaims := claims.Nats
+
+	sub, ok := natsClaims["sub"]
+
+	if ok {
+		subPerms, err := parseVariablePermissions(sub)
+		if err != nil {
+			return err
+		}
+		perms.Subscribe = subPerms
+	}
+
+	pub, ok := natsClaims["pub"]
+
+	if ok {
+		pubPerms, err := parseVariablePermissions(pub)
+		if err != nil {
+			return err
+		}
+		perms.Publish = pubPerms
+	}
+
+	// Process Permissions and map into client connection structures.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.setPermissions(perms)
+
+	return nil
 }
 
 // Lock should be held on entry

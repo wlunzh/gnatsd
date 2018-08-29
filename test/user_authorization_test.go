@@ -14,8 +14,13 @@
 package test
 
 import (
+	"encoding/base64"
+	"fmt"
 	"regexp"
 	"testing"
+
+	"github.com/nats-io/jwt"
+	"github.com/nats-io/nkeys"
 )
 
 const DefaultPass = "foo"
@@ -104,6 +109,87 @@ func TestUserAuthorizationProto(t *testing.T) {
 	defer c.Close()
 	expectAuthRequired(t, c)
 	doAuthConnect(t, c, "", "ns", DefaultPass)
+	expectResult(t, c, okRe)
+
+	// These should work
+	sendProto(t, c, "PUB SANDBOX.foo 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "PUB baz.bar 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "PUB baz.foo 2\r\nok\r\n")
+	expectResult(t, c, okRe)
+
+	// These should error.
+	sendProto(t, c, "PUB foo 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB bar 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB foo.bar 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB foo.bar.baz 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "PUB SYS.1 2\r\nok\r\n")
+	expectResult(t, c, permErrRe)
+
+	// Subscriptions
+
+	// These should work ok.
+	sendProto(t, c, "SUB foo.bar 1\r\n")
+	expectResult(t, c, okRe)
+	sendProto(t, c, "SUB foo.foo 1\r\n")
+	expectResult(t, c, okRe)
+
+	// These should error.
+	sendProto(t, c, "SUB foo 1\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
+	sendProto(t, c, "SUB foo.baz 1\r\n")
+	expectResult(t, c, permErrRe)
+}
+
+func TestJWTAuthorizationProto(t *testing.T) {
+
+	acct, _ := nkeys.CreateAccount(nil)
+	pub, _ := acct.PublicKey()
+	acctJwt := jwt.NewClaims()
+	acctJwt.Issuer = pub
+	encoded, _ := acctJwt.Encode(acct)
+
+	opts := DefaultTestOptions
+	opts.Port = AUTH_PORT
+	opts.Account = encoded
+	opts.MaxControlLine = 2048
+	opts.AuthTimeout = 60
+
+	srv := RunServer(&opts)
+	defer srv.Shutdown()
+
+	// Use the same perms as the new style test above
+	user, _ := nkeys.CreateUser(nil)
+	claims := jwt.NewClaims()
+	claims.Nats["id"], _ = user.PublicKey()
+	claims.Nats["sub"] = map[string][]string{
+		"allow": []string{"foo.*"},
+		"deny":  []string{"foo.baz"},
+	}
+	claims.Nats["pub"] = map[string][]string{
+		"allow": []string{"*.*"},
+		"deny":  []string{"SYS.*", "bar.baz", "foo.*"},
+	}
+
+	acl, _ := claims.Encode(acct)
+	c := createClientConn(t, opts.Host, opts.Port)
+	defer c.Close()
+
+	nonce := []byte(expectAuthRequiredReturnNonce(t, c))
+	sig, _ := user.Sign(nonce)
+	encodedSig := base64.RawStdEncoding.EncodeToString(sig)
+
+	cs := fmt.Sprintf("CONNECT {\"verbose\":true,\"sig\":\"%s\",\"acl\":\"%s\"}\r\n", encodedSig, acl)
+	sendProto(t, c, cs)
 	expectResult(t, c, okRe)
 
 	// These should work

@@ -236,7 +236,12 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		}
 		return comparePasswords(opts.Password, c.opts.Password)
 	} else if s.hasAccounts() {
-		return s.checkAccount(c)
+		ok, jwt := s.checkAccount(c)
+
+		if ok {
+			c.RegisterClaims(jwt)
+		}
+		return ok
 	} else if s.hasClientKeys() {
 		return s.checkClientKey(c)
 	}
@@ -297,7 +302,7 @@ func (s *Server) removeUnauthorizedSubs(c *client) {
 }
 
 // Checks that the client has signed on with the account
-func (s *Server) checkAccount(c *client) bool {
+func (s *Server) checkAccount(c *client) (bool, *jwt.Claims) {
 	nonce := c.nonce
 	acl := c.opts.ACL
 	clientID := c.opts.ID
@@ -305,14 +310,14 @@ func (s *Server) checkAccount(c *client) bool {
 
 	// Check that we have a nonce for this client, then clear it
 	if nonce == "" {
-		return false
+		return false, nil
 	}
 	c.clearNonce()
 
 	// Check that we have a valid JWT
 	clientJWT, err := jwt.Decode(acl)
 	if err != nil {
-		return false
+		return false, nil
 	}
 
 	// Make sure we know the account
@@ -326,27 +331,27 @@ func (s *Server) checkAccount(c *client) bool {
 	}
 
 	if !knownAccount {
-		return false
+		return false, nil
 	}
 
 	// Grab the user allowed to use the JWT and make sure they signed the nonce
 	publicID := clientJWT.Nats["id"].(string)
 
 	if clientID != "" && clientID != publicID {
-		return false
+		return false, nil
 	}
 
 	clientNKey, err := nkeys.FromPublicKey(publicID)
 	if err != nil {
-		return false
+		return false, nil
 	}
 
 	decodedSig, err := base64.RawStdEncoding.DecodeString(sig)
 	if err != nil {
-		return false
+		return false, nil
 	}
 
-	return (clientNKey.Verify([]byte(nonce), decodedSig) == nil)
+	return (clientNKey.Verify([]byte(nonce), decodedSig) == nil), clientJWT
 }
 
 // Checks that the client has signed on with a valid client key
