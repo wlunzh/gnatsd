@@ -128,8 +128,8 @@ func TestMultipleKeyAuth(t *testing.T) {
 		opts.Host, opts.Port)
 
 	seed := "SUAJP574IOPM7XANWNU4MQR4NXV6IMKHMH4YI4G2BHLHC2THRM4NHHGFJ5XMLJSDKGVNKZTY7BE6TRZZG74X7H3RY6O7LI6K7AL6SKPH2P3K4"
-	user, err := nkeys.FromSeed(seed)
-	pub, err := user.PublicKey()
+	user, _ := nkeys.FromSeed(seed)
+	pub, _ := user.PublicKey()
 	handler := &testAuthHandler{
 		key: user,
 		id:  pub,
@@ -147,8 +147,8 @@ func TestMultipleKeyAuth(t *testing.T) {
 
 	// Test second user
 	seed = "SUAGKUTMGBNQJRKEVFWUMQUJXVXVDOONOODJ6HOANUQHKZRA4ZONPE3BF4BIYPQ3YMT3KRM64UPMBW7ZIPCUTPJCXQAEYKLE55OA25RXJSNXY"
-	user, err = nkeys.FromSeed(seed)
-	pub, err = user.PublicKey()
+	user, _ = nkeys.FromSeed(seed)
+	pub, _ = user.PublicKey()
 	handler = &testAuthHandler{
 		key: user,
 		id:  pub,
@@ -177,8 +177,8 @@ func TestMultipleAccountAuth(t *testing.T) {
 		opts.Host, opts.Port)
 
 	seed := "SAAGEPPTBJ6VEC4FPZ3HA472273BLJFEKPSRYGSR4NH64EJAQC3NB3EOCO2AN2FVNSBDCB5C35RVT76YJOXYCQR6MRRLVPPFK6I7GDKHWAXIG"
-	acct, err := nkeys.FromSeed(seed)
-	user, err := nkeys.CreateUser(nil)
+	acct, _ := nkeys.FromSeed(seed)
+	user, _ := nkeys.CreateUser(nil)
 	claims := jwt.NewClaims()
 	claims.Nats["id"], _ = user.PublicKey()
 	acl, _ := claims.Encode(acct)
@@ -201,8 +201,8 @@ func TestMultipleAccountAuth(t *testing.T) {
 	// Test second user
 
 	seed = "SAAGEPPTBJ6VEC4FPZ3HA472273BLJFEKPSRYGSR4NH64EJAQC3NB3EOCO2AN2FVNSBDCB5C35RVT76YJOXYCQR6MRRLVPPFK6I7GDKHWAXIG"
-	acct, err = nkeys.FromSeed(seed)
-	user, err = nkeys.CreateUser(nil)
+	acct, _ = nkeys.FromSeed(seed)
+	user, _ = nkeys.CreateUser(nil)
 	claims = jwt.NewClaims()
 	claims.Nats["id"], _ = user.PublicKey()
 	acl, _ = claims.Encode(acct)
