@@ -6,7 +6,6 @@ install:
 - git clone https://github.com/nats-io/go-nats.git vendor/github.com/nats-io/go-nats;
 - cd vendor/github.com/nats-io/go-nats;
 - git checkout jwt;
-- go install ./...
 - cd ../../../..
 - go get github.com/nats-io/nkeys
 - go get github.com/nats-io/jwt
