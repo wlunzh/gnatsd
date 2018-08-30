@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/nats-io/go-nats"
+	"github.com/nats-io/jwt"
+	"github.com/nats-io/nkeys"
 )
 
 // Ensure Reload returns an error when attempting to reload a server that did
@@ -1990,5 +1992,396 @@ func createSymlink(t *testing.T, symlinkName, fileName string) {
 	os.Remove(symlinkName)
 	if err := os.Symlink(fileName, symlinkName); err != nil {
 		t.Fatalf("Error creating symlink: %v (ensure you have privileges)", err)
+	}
+}
+
+type testAuthHandler struct {
+	key nkeys.KeyPair
+	acl string
+	id  string
+}
+
+func (t *testAuthHandler) Sign(nonce []byte) ([]byte, error) {
+	return t.key.Sign(nonce)
+}
+
+func (t *testAuthHandler) ACL() (string, error) {
+	return t.acl, nil
+}
+
+func (t *testAuthHandler) ID() (string, error) {
+	return t.id, nil
+}
+
+// Ensure Reload supports enabling client key authentication. Test this by
+// starting a server with authentication disabled, connect to it to verify,
+// reload config using with a client key, ensure reconnect fails, then
+// ensure reconnect succeeds when using the correct credentials.
+func TestConfigReloadEnableClientKeyAuthentication(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	disconnected := make(chan struct{})
+	asyncErr := make(chan error)
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr <- err
+	})
+	nc.SetDisconnectHandler(func(*nats.Conn) {
+		disconnected <- struct{}{}
+	})
+
+	// Enable authentication.
+	createSymlink(t, config, "./configs/multiple_key.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting fails.
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	seed := "SUAJP574IOPM7XANWNU4MQR4NXV6IMKHMH4YI4G2BHLHC2THRM4NHHGFJ5XMLJSDKGVNKZTY7BE6TRZZG74X7H3RY6O7LI6K7AL6SKPH2P3K4"
+	user, _ := nkeys.FromSeed(seed)
+	pub, _ := user.PublicKey()
+	handler := &testAuthHandler{
+		key: user,
+		id:  pub,
+	}
+
+	// Ensure connecting succeeds when using new credentials.
+	conn, err := nats.Connect(addr, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+
+	// Ensure the previous connection received an authorization error.
+	select {
+	case err := <-asyncErr:
+		if err != nats.ErrAuthorization {
+			t.Fatalf("Expected ErrAuthorization, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected authorization error")
+	}
+
+	// Ensure the previous connection was disconnected.
+	select {
+	case <-disconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected connection to be disconnected")
+	}
+}
+
+// Ensure Reload supports disabling account authentication. Test this by
+// starting a server with authentication enabled, connect to it to verify,
+// reload config using with authentication disabled, then ensure connecting
+// with no credentials succeeds.
+func TestConfigReloadDisableClientKeyAuthentication(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf",
+		"./configs/multiple_key.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	seed := "SUAJP574IOPM7XANWNU4MQR4NXV6IMKHMH4YI4G2BHLHC2THRM4NHHGFJ5XMLJSDKGVNKZTY7BE6TRZZG74X7H3RY6O7LI6K7AL6SKPH2P3K4"
+	user, _ := nkeys.FromSeed(seed)
+	pub, _ := user.PublicKey()
+	handler := &testAuthHandler{
+		key: user,
+		id:  pub,
+	}
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		t.Fatalf("Client received an unexpected error: %v", err)
+	})
+
+	// Disable authentication.
+	createSymlink(t, config, "./configs/reload/basic.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting succeeds with no credentials.
+	conn, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+}
+
+// Ensure Reload doesn't break client key authentication. Test this by
+// starting a server with authentication disabled, connect to it to verify,
+// reload config using with a client key, ensure reconnect fails, then
+// ensure reconnect succeeds when using the correct credentials.
+func TestConfigReloadDoesntBreakClientKeyAuthentication(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/multiple_key.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	// Ensure we can connect as a sanity check.
+	seed := "SUAJP574IOPM7XANWNU4MQR4NXV6IMKHMH4YI4G2BHLHC2THRM4NHHGFJ5XMLJSDKGVNKZTY7BE6TRZZG74X7H3RY6O7LI6K7AL6SKPH2P3K4"
+	user, _ := nkeys.FromSeed(seed)
+	pub, _ := user.PublicKey()
+	handler := &testAuthHandler{
+		key: user,
+		id:  pub,
+	}
+
+	// Ensure connecting fails without credentials.
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	// Ensure connecting succeeds when using new credentials.
+	nc, err := nats.Connect(addr, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+
+	disconnected := make(chan struct{})
+	asyncErr := make(chan error)
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr <- err
+	})
+	nc.SetDisconnectHandler(func(*nats.Conn) {
+		disconnected <- struct{}{}
+	})
+
+	// Enable authentication.
+	createSymlink(t, config, "./configs/multiple_key.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting still fails.
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	// ensure no errors for existing connection
+	select {
+	case err := <-asyncErr:
+		if err != nil {
+			t.Fatalf("Didn't expect errors, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+	}
+
+	// ensure no disconnect for existing connection
+	select {
+	case <-disconnected:
+		t.Fatal("Expected connection to stay connected")
+	case <-time.After(2 * time.Second):
+	}
+}
+
+// Ensure Reload supports enabling account authentication. Test this by
+// starting a server with authentication disabled, connect to it to verify,
+// reload config using with a client key, ensure reconnect fails, then
+// ensure reconnect succeeds when using the correct credentials.
+func TestConfigReloadEnableAccountAuthentication(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/reload/basic.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	disconnected := make(chan struct{})
+	asyncErr := make(chan error)
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr <- err
+	})
+	nc.SetDisconnectHandler(func(*nats.Conn) {
+		disconnected <- struct{}{}
+	})
+
+	// Enable authentication.
+	createSymlink(t, config, "./configs/multiple_acct.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting fails.
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	seed := "SAAGEPPTBJ6VEC4FPZ3HA472273BLJFEKPSRYGSR4NH64EJAQC3NB3EOCO2AN2FVNSBDCB5C35RVT76YJOXYCQR6MRRLVPPFK6I7GDKHWAXIG"
+	acct, _ := nkeys.FromSeed(seed)
+	user, _ := nkeys.CreateUser(nil)
+	claims := jwt.NewClaims()
+	claims.Nats["id"], _ = user.PublicKey()
+	acl, _ := claims.Encode(acct)
+
+	handler := &testAuthHandler{
+		key: user,
+		acl: acl,
+	}
+
+	// Ensure connecting succeeds when using new credentials.
+	conn, err := nats.Connect(addr, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+
+	// Ensure the previous connection received an authorization error.
+	select {
+	case err := <-asyncErr:
+		if err != nats.ErrAuthorization {
+			t.Fatalf("Expected ErrAuthorization, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected authorization error")
+	}
+
+	// Ensure the previous connection was disconnected.
+	select {
+	case <-disconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected connection to be disconnected")
+	}
+}
+
+// Ensure Reload supports disabling account authentication. Test this by
+// starting a server with authentication enabled, connect to it to verify,
+// reload config using with authentication disabled, then ensure connecting
+// with no credentials succeeds.
+func TestConfigReloadDisableAccountAuthentication(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf",
+		"./configs/multiple_acct.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	seed := "SAAGEPPTBJ6VEC4FPZ3HA472273BLJFEKPSRYGSR4NH64EJAQC3NB3EOCO2AN2FVNSBDCB5C35RVT76YJOXYCQR6MRRLVPPFK6I7GDKHWAXIG"
+	acct, _ := nkeys.FromSeed(seed)
+	user, _ := nkeys.CreateUser(nil)
+	claims := jwt.NewClaims()
+	claims.Nats["id"], _ = user.PublicKey()
+	acl, _ := claims.Encode(acct)
+
+	handler := &testAuthHandler{
+		key: user,
+		acl: acl,
+	}
+
+	// Ensure we can connect as a sanity check.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	nc, err := nats.Connect(addr, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		t.Fatalf("Client received an unexpected error: %v", err)
+	})
+
+	// Disable authentication.
+	createSymlink(t, config, "./configs/reload/basic.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting succeeds with no credentials.
+	conn, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	conn.Close()
+}
+
+// Ensure Reload doesn't break account authentication. Test this by
+// starting a server with authentication disabled, connect to it to verify,
+// reload config using with a client key, ensure reconnect fails, then
+// ensure reconnect succeeds when using the correct credentials.
+func TestConfigReloadDoesntBreakAccountAuthentication(t *testing.T) {
+	server, opts, config := runServerWithSymlinkConfig(t, "tmp.conf", "./configs/multiple_acct.conf")
+	defer os.Remove(config)
+	defer server.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+
+	seed := "SAAGEPPTBJ6VEC4FPZ3HA472273BLJFEKPSRYGSR4NH64EJAQC3NB3EOCO2AN2FVNSBDCB5C35RVT76YJOXYCQR6MRRLVPPFK6I7GDKHWAXIG"
+	acct, _ := nkeys.FromSeed(seed)
+	user, _ := nkeys.CreateUser(nil)
+	claims := jwt.NewClaims()
+	claims.Nats["id"], _ = user.PublicKey()
+	acl, _ := claims.Encode(acct)
+
+	handler := &testAuthHandler{
+		key: user,
+		acl: acl,
+	}
+
+	// Ensure connecting fails without credentials.
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	// Ensure connecting succeeds when using new credentials.
+	nc, err := nats.Connect(addr, nats.Auth(handler))
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc.Close()
+
+	disconnected := make(chan struct{})
+	asyncErr := make(chan error)
+	nc.SetErrorHandler(func(nc *nats.Conn, sub *nats.Subscription, err error) {
+		asyncErr <- err
+	})
+	nc.SetDisconnectHandler(func(*nats.Conn) {
+		disconnected <- struct{}{}
+	})
+
+	// Enable authentication.
+	createSymlink(t, config, "./configs/multiple_acct.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure connecting still fails.
+	if _, err := nats.Connect(addr); err == nil {
+		t.Fatal("Expected connect to fail")
+	}
+
+	// ensure no errors for existing connection
+	select {
+	case err := <-asyncErr:
+		if err != nil {
+			t.Fatalf("Didn't expect errors, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+	}
+
+	// ensure no disconnect for existing connection
+	select {
+	case <-disconnected:
+		t.Fatal("Expected connection to stay connected")
+	case <-time.After(2 * time.Second):
 	}
 }

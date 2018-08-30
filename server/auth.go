@@ -141,7 +141,7 @@ func (s *Server) configureAuthorization() {
 		s.clientKeys = make(map[string]string)
 		s.clientKeys[opts.ClientKey] = opts.ClientKey
 		s.info.AuthRequired = true
-	} else if opts.ClientKeys != nil && len(opts.ClientKeys) > 0 {
+	} else if opts.ClientKeys != nil {
 		s.clientKeys = make(map[string]string)
 		for _, u := range opts.ClientKeys {
 			s.clientKeys[u] = u
@@ -153,7 +153,7 @@ func (s *Server) configureAuthorization() {
 		s.accounts = make(map[string]*jwt.Claims)
 		s.accounts[account.Issuer] = account
 		s.info.AuthRequired = true
-	} else if opts.Accounts != nil && len(opts.Accounts) > 0 {
+	} else if opts.Accounts != nil {
 		s.accounts = make(map[string]*jwt.Claims)
 		for _, u := range opts.Accounts {
 			s.accounts[u.Issuer] = u
@@ -161,6 +161,8 @@ func (s *Server) configureAuthorization() {
 		s.info.AuthRequired = true
 	} else {
 		s.users = nil
+		s.accounts = nil
+		s.clientKeys = nil
 		s.info.AuthRequired = false
 	}
 }
@@ -170,7 +172,7 @@ func (s *Server) configureAuthorization() {
 func (s *Server) checkAuthorization(c *client) bool {
 	switch c.typ {
 	case CLIENT:
-		return s.isClientAuthorized(c)
+		return s.isClientAuthorized(c, false)
 	case ROUTER:
 		return s.isRouterAuthorized(c)
 	default:
@@ -204,7 +206,7 @@ func (s *Server) hasClientKeys() bool {
 
 // isClientAuthorized will check the client against the proper authorization method and data.
 // This could be token or username/password based.
-func (s *Server) isClientAuthorized(c *client) bool {
+func (s *Server) isClientAuthorized(c *client, forReload bool) bool {
 	// Snapshot server options.
 	opts := s.getOpts()
 
@@ -236,14 +238,14 @@ func (s *Server) isClientAuthorized(c *client) bool {
 		}
 		return comparePasswords(opts.Password, c.opts.Password)
 	} else if s.hasAccounts() {
-		ok, jwt := s.checkAccount(c)
+		ok, jwt := s.checkAccount(c, forReload)
 
 		if ok {
 			c.RegisterClaims(jwt)
 		}
 		return ok
 	} else if s.hasClientKeys() {
-		return s.checkClientKey(c)
+		return s.checkClientKey(c, forReload)
 	}
 
 	return true
@@ -302,17 +304,11 @@ func (s *Server) removeUnauthorizedSubs(c *client) {
 }
 
 // Checks that the client has signed on with the account
-func (s *Server) checkAccount(c *client) (bool, *jwt.Claims) {
+func (s *Server) checkAccount(c *client, forReload bool) (bool, *jwt.Claims) {
 	nonce := c.nonce
 	acl := c.opts.ACL
 	clientID := c.opts.ID
 	sig := c.opts.Sig
-
-	// Check that we have a nonce for this client, then clear it
-	if nonce == "" {
-		return false, nil
-	}
-	c.clearNonce()
 
 	// Check that we have a valid JWT
 	clientJWT, err := jwt.Decode(acl)
@@ -333,6 +329,16 @@ func (s *Server) checkAccount(c *client) (bool, *jwt.Claims) {
 	if !knownAccount {
 		return false, nil
 	}
+
+	if forReload {
+		return false, clientJWT //skip the nonce check, it was cleared
+	}
+
+	// Check that we have a nonce for this client, then clear it
+	if nonce == "" {
+		return false, nil
+	}
+	c.clearNonce()
 
 	// Grab the user allowed to use the JWT and make sure they signed the nonce
 	publicID := clientJWT.Nats["id"].(string)
@@ -355,16 +361,10 @@ func (s *Server) checkAccount(c *client) (bool, *jwt.Claims) {
 }
 
 // Checks that the client has signed on with a valid client key
-func (s *Server) checkClientKey(c *client) bool {
+func (s *Server) checkClientKey(c *client, forReload bool) bool {
 	nonce := c.nonce
 	clientID := c.opts.ID
 	sig := c.opts.Sig
-
-	// Check that we have a nonce for this client, then clear it
-	if nonce == "" {
-		return false
-	}
-	c.clearNonce()
 
 	knownClient := false
 	publicID := ""
@@ -377,6 +377,16 @@ func (s *Server) checkClientKey(c *client) bool {
 	if !knownClient {
 		return false
 	}
+
+	if forReload {
+		return true // Skip the nonce check since we don't have a nonce anymore
+	}
+
+	// Check that we have a nonce for this client, then clear it
+	if nonce == "" {
+		return false
+	}
+	c.clearNonce()
 
 	clientNKey, err := nkeys.FromPublicKey(publicID)
 	if err != nil {

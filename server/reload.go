@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/jwt"
 )
 
 // FlagSnapshot captures the server options as specified by CLI flags at
@@ -206,6 +208,30 @@ type authorizationOption struct {
 // applied.
 func (a *authorizationOption) Apply(server *Server) {
 	server.Noticef("Reloaded: authorization token")
+}
+
+// clientKeyOption implements the option interface for the `clientkeys` setting.
+type clientKeyOption struct {
+	authOption
+	newValue []string
+}
+
+// Apply is a no-op because authorization will be reloaded after options are
+// applied.
+func (u *clientKeyOption) Apply(server *Server) {
+	server.Noticef("Reloaded: authorization client keys")
+}
+
+// accountOption implements the option interface for the `accounts` setting.
+type accountOption struct {
+	authOption
+	newValue []*jwt.Claims
+}
+
+// Apply is a no-op because authorization will be reloaded after options are
+// applied.
+func (u *accountOption) Apply(server *Server) {
+	server.Noticef("Reloaded: authorization accounts")
 }
 
 // authTimeoutOption implements the option interface for the authorization
@@ -555,6 +581,10 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			diffOpts = append(diffOpts, &authTimeoutOption{newValue: newValue.(float64)})
 		case "users":
 			diffOpts = append(diffOpts, &usersOption{newValue: newValue.([]*User)})
+		case "clientkeys":
+			diffOpts = append(diffOpts, &clientKeyOption{newValue: newValue.([]string)})
+		case "accounts":
+			diffOpts = append(diffOpts, &accountOption{newValue: newValue.([]*jwt.Claims)})
 		case "cluster":
 			newClusterOpts := newValue.(ClusterOpts)
 			if err := validateClusterOpts(oldValue.(ClusterOpts), newClusterOpts); err != nil {
@@ -653,7 +683,7 @@ func (s *Server) reloadAuthorization() {
 
 	for _, client := range clients {
 		// Disconnect any unauthorized clients.
-		if !s.isClientAuthorized(client) {
+		if !s.isClientAuthorized(client, true) {
 			client.authViolation()
 			continue
 		}
